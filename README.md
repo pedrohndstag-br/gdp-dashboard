@@ -144,45 +144,7 @@ if st.button("✉️ Enviar Relatório por E-mail"):
 
    $ streamlit run streamlit_app.py
    ```
-   {
-    // Use o IntelliSense para saber mais sobre os atributos possíveis.
-    // Focalizar para exibir as descrições dos atributos existentes.
-    // Para obter mais informações, acesse: https://go.microsoft.com/fwlink/?linkid=830387
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "Attach to Chrome",
-            "port": 9222,
-            "request": "attach",
-            "type": "chrome",
-            "webRoot": "${workspaceFolder}"
-        },
-
-
-        {
-            "name": "Launch Chrome",
-            "request": "launch",
-            "type": "chrome",
-            "url": "https://localhost:8080",
-            "webRoot": "${workspaceFolder}"
-        },
-        {
-            "request": "launch",
-            "name": "Launch Program",
-            "type": "node",
-            "program": "${workspaceFolder}/main.ts",
-            "cwd": "${workspaceFolder}",
-            "env": {},
-            "runtimeExecutable": "deno",
-            "runtimeArgs": [
-                "run",
-                "--unstable",
-                "--inspect-brk",
-                "--allow-all"
-            ],
-            "attachSimplePort": 9229
-        }
-    ]
+  
 run.bat
 @echo off
 echo 🚀 Instalando dependencias...
