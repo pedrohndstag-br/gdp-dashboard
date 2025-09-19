@@ -52,15 +52,28 @@ if source == "Local":
         st.error(f"Erro ao ler {LOCAL_FILE} (verifique se a aba 'data' existe).")
 elif source == "OneDrive (padrão)":
     url = st.sidebar.text_input("URL OneDrive", value=DEFAULT_ONEDRIVE)
-    if st.sidebar.button("Baixar planilha do OneDrive"):
-        st.info("Baixando a planilha...")
-        bts = download_excel_bytes(url)
+    st.sidebar.write("Ao selecionar OneDrive, o app tentará baixar a aba 'data' automaticamente.")
+    salvar_local = st.sidebar.checkbox("Salvar cópia local em Controle_Pedidos.xlsx", value=True)
+    if url:
+        with st.spinner("Baixando a planilha do OneDrive..."):
+            bts = download_excel_bytes(url)
         if bts is None:
             st.error("Falha ao baixar a planilha. Verifique a URL ou a conexão.")
         else:
+            # tentar ler diretamente da memória
             df = load_excel_from_bytes(bts, sheet_name="data")
             if df is None:
-                st.error("A planilha foi baixada, mas não foi possível ler a aba 'data'.")
+                st.error("A planilha foi baixada, mas não foi possível ler a aba 'data'. Verifique o nome da aba.")
+            else:
+                st.success("Planilha baixada e aba 'data' carregada com sucesso.")
+                # salvar cópia local para aparecer no explorador do workspace
+                if salvar_local:
+                    try:
+                        with open(LOCAL_FILE, "wb") as f:
+                            f.write(bts)
+                        st.info(f"Cópia salva como {LOCAL_FILE} (visível no explorador).")
+                    except Exception as e:
+                        st.warning(f"Falha ao salvar cópia local: {e}")
 elif source == "Upload":
     uploaded = st.file_uploader("Faça upload do arquivo Excel (aba 'data')", type=["xlsx", "xls"])
     if uploaded:
