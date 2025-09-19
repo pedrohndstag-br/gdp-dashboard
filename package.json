@@ -1,0 +1,21 @@
+{
+  "name": "google-search-command",
+  "displayName": "Google Search Command",
+  "description": "Extensão mínima que adiciona o comando `extension.googleSearch` (activation: onCommand) para buscar no Google a seleção atual.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "activationEvents": [
+    "onCommand:extension.googleSearch"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "extension.googleSearch",
+        "title": "Google Search: Search Selection"
+      }
+    ]
+  }
+}

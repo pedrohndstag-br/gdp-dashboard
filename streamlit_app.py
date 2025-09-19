@@ -1,151 +1,208 @@
-import streamlit as st
+import os
+import io
+import requests
 import pandas as pd
-import math
-from pathlib import Path
+import matplotlib.pyplot as plt
+import streamlit as st
+from fpdf import FPDF
+import smtplib
+from email.message import EmailMessage
+from datetime import datetime
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+st.set_page_config(page_title="Relatório de Faturamento", layout="wide")
+st.title("📊 Relatório de Faturamento")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+LOCAL_FILE = "Controle_Pedidos.xlsx"
+DEFAULT_ONEDRIVE = "https://1drv.ms/x/c/193EB5E7297B4F7D/EZgeF0J4CKVMlKfmZSWahXUBrhXgnl7mbBoVOlpNyWtfXw?e=cciTkd"
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def download_excel_bytes(url, timeout=20):
+    try:
+        resp = requests.get(url, allow_redirects=True, timeout=timeout)
+        resp.raise_for_status()
+        return resp.content
+    except Exception as e:
+        return None
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+def load_excel_from_bytes(bts, sheet_name="data"):
+    try:
+        return pd.read_excel(io.BytesIO(bts), sheet_name=sheet_name)
+    except Exception:
+        return None
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+def load_from_local(path, sheet_name="data"):
+    try:
+        return pd.read_excel(path, sheet_name=sheet_name)
+    except Exception:
+        return None
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+# Escolha da fonte de dados
+st.sidebar.header("Fonte de dados")
+sources = []
+if os.path.exists(LOCAL_FILE):
+    sources.append("Local")
+sources.append("OneDrive (padrão)")
+sources.append("Upload")
+source = st.sidebar.selectbox("Selecione a fonte", sources)
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+df = None
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+if source == "Local":
+    df = load_from_local(LOCAL_FILE, sheet_name="data")
+    if df is None:
+        st.error(f"Erro ao ler {LOCAL_FILE} (verifique se a aba 'data' existe).")
+elif source == "OneDrive (padrão)":
+    url = st.sidebar.text_input("URL OneDrive", value=DEFAULT_ONEDRIVE)
+    if st.sidebar.button("Baixar planilha do OneDrive"):
+        st.info("Baixando a planilha...")
+        bts = download_excel_bytes(url)
+        if bts is None:
+            st.error("Falha ao baixar a planilha. Verifique a URL ou a conexão.")
+        else:
+            df = load_excel_from_bytes(bts, sheet_name="data")
+            if df is None:
+                st.error("A planilha foi baixada, mas não foi possível ler a aba 'data'.")
+elif source == "Upload":
+    uploaded = st.file_uploader("Faça upload do arquivo Excel (aba 'data')", type=["xlsx", "xls"])
+    if uploaded:
+        try:
+            df = pd.read_excel(uploaded, sheet_name="data")
+        except Exception:
+            st.error("Não foi possível ler a aba 'data' do arquivo enviado.")
 
-    return gdp_df
+if df is None:
+    st.info("Nenhum dataset carregado ainda. Selecione uma fonte e carregue a planilha.")
+    st.stop()
 
-gdp_df = get_gdp_data()
+# --- Normalizações e validações ---
+df.columns = df.columns.str.strip().str.upper()
+required = {"SIGLA", "VALOR TOTAL", "STATUS", "DATA"}
+if not required.issubset(set(df.columns)):
+    st.error(f"A planilha deve conter as colunas: {', '.join(required)} (colunas atuais: {', '.join(df.columns[:10])}...)")
+    st.stop()
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+df["DATA"] = pd.to_datetime(df["DATA"], errors="coerce")
+df["STATUS"] = df["STATUS"].astype(str).str.upper()
+df["SIGLA"] = df["SIGLA"].astype(str).str.strip()
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+# --- Filtros na sidebar ---
+st.sidebar.header("Filtros")
+siglas = sorted(df["SIGLA"].dropna().unique().tolist())
+siglas_sel = st.sidebar.multiselect("Clientes (SIGLA)", siglas, default=siglas if siglas else [])
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+data_min = df["DATA"].min()
+data_max = df["DATA"].max()
+if pd.isna(data_min) or pd.isna(data_max):
+    data_min = datetime.today()
+    data_max = datetime.today()
+data_range = st.sidebar.date_input("Intervalo de Datas", [data_min.date(), data_max.date()])
 
-# Add some spacing
-''
-''
+# normalizar data_range
+if isinstance(data_range, list) and len(data_range) == 2:
+    dt_start, dt_end = pd.to_datetime(data_range[0]), pd.to_datetime(data_range[1])
+else:
+    dt_start = pd.to_datetime(data_min)
+    dt_end = pd.to_datetime(data_max)
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
+# --- Aplicar filtro ---
+df_filt = df[
+    (df["STATUS"] == "FATURADO") &
+    (df["SIGLA"].isin(siglas_sel)) &
+    (df["DATA"].between(dt_start, dt_end))
 ]
 
-st.header('GDP over time', divider='gray')
+if df_filt.empty:
+    st.info("Nenhum pedido FATURADO encontrado para os filtros selecionados.")
+    st.stop()
 
-''
+# --- Agrupamento e métricas ---
+df_resumo = df_filt.groupby("SIGLA", as_index=False)["VALOR TOTAL"].sum()
+df_resumo = df_resumo.sort_values("VALOR TOTAL", ascending=False)
+faturamento_total = df_filt["VALOR TOTAL"].sum()
 
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
+st.subheader("💰 Total Pago por Cliente")
+st.dataframe(df_resumo, use_container_width=True)
+st.metric("📈 Faturamento Total", f"R$ {faturamento_total:,.2f}")
 
-''
-''
+# --- Gráfico ---
+st.subheader("📉 Gráfico de Faturamento")
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.bar(df_resumo["SIGLA"], df_resumo["VALOR TOTAL"], color="steelblue")
+ax.set_xlabel("Cliente (SIGLA)")
+ax.set_ylabel("Valor Total (R$)")
+ax.set_title("Pedidos FATURADOS")
+plt.xticks(rotation=45)
+plt.tight_layout()
+st.pyplot(fig)
 
+# salvar imagem para PDF
+img_bytes = io.BytesIO()
+fig.savefig(img_bytes, format="png", bbox_inches="tight")
+img_bytes.seek(0)
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+# --- Gerar PDF ---
+def gerar_pdf_bytes(periodo_start, periodo_end, fatur_total, image_bytes):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, "Relatório de Faturamento", ln=True, align="C")
+    pdf.ln(4)
+    pdf.cell(200, 8, f"Período: {periodo_start.date()} a {periodo_end.date()}", ln=True, align="C")
+    pdf.ln(4)
+    pdf.cell(200, 8, f"Faturamento Total: R$ {fatur_total:,.2f}", ln=True, align="C")
+    # salvar imagem temporária em memória
+    img_path = "grafico_temp.png"
+    with open(img_path, "wb") as f:
+        f.write(image_bytes.read())
+    pdf.image(img_path, x=10, y=50, w=190)
+    # limpar arquivo temporário
+    try:
+        os.remove(img_path)
+    except Exception:
+        pass
+    out = pdf.output(dest="S").encode("latin-1")
+    return out
 
-st.header(f'GDP in {to_year}', divider='gray')
+pdf_bytes = gerar_pdf_bytes(dt_start, dt_end, faturamento_total, io.BytesIO(img_bytes.getvalue()))
 
-''
+st.download_button("📄 Baixar PDF", data=pdf_bytes, file_name="relatorio.pdf", mime="application/pdf")
 
-cols = st.columns(4)
+# --- Exportar Excel resumo ---
+excel_buffer = io.BytesIO()
+with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+    df_resumo.to_excel(writer, index=False, sheet_name="Resumo")
+excel_buffer.seek(0)
+st.download_button("📥 Baixar Excel", data=excel_buffer, file_name="resumo.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+# --- Enviar por e-mail (opcional) ---
+st.subheader("📤 Enviar por E-mail (opcional)")
+email_dest = st.text_input("E-mail do destinatário:")
+EMAIL_REMETENTE = os.getenv("EMAIL_REMETENTE") or ""
+SENHA_REMETENTE = os.getenv("SENHA_REMETENTE") or ""
 
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
+def enviar_email(destinatario, remetente, senha, arquivo_bytes):
+    if not remetente or not senha:
+        return "Variáveis de ambiente EMAIL_REMETENTE e SENHA_REMETENTE não configuradas."
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = "Relatório de Faturamento"
+        msg["From"] = remetente
+        msg["To"] = destinatario
+        msg.set_content(f"Segue em anexo o relatório de faturamento.\n\nTotal: R$ {faturamento_total:,.2f}")
+        msg.add_attachment(arquivo_bytes, maintype="application", subtype="pdf", filename="relatorio.pdf")
+        with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
+            smtp.starttls()
+            smtp.login(remetente, senha)
+            smtp.send_message(msg)
+        return True
+    except Exception as e:
+        return str(e)
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+if st.button("✉️ Enviar Relatório por E-mail"):
+    if not email_dest:
+        st.warning("Digite um e-mail válido.")
+    else:
+        resultado = enviar_email(email_dest, EMAIL_REMETENTE, SENHA_REMETENTE, pdf_bytes)
+        if resultado is True:
+            st.success("✅ E-mail enviado com sucesso!")
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+            st.error(f"Erro ao enviar: {resultado}")
